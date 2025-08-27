@@ -11,7 +11,7 @@ It integrates parcel, boundary, and transit datasets into a PostGIS database, ap
 - **`queries.sql`** → Example analysis queries (new parcels, bus/train access, tract-level summaries).  
 - **`parcels_finalproject_etl.qmd`** → ETL script for parcel data (cleaning, filtering for 2020+, spatial load into PostGIS).  
 - **`transit_bndy.qmd`** → ETL script for boundaries and transit datasets (counties, tracts, MARC, AMTRAK, WMATA, RideOn, MTA).  
-- **`/figures/`** → (Place your exported maps/images here).  
+- **`/figures/`** → (Exported maps/images are placed here).  
 
 ---
 
@@ -121,7 +121,18 @@ Bus facilities:
 - Northern/Western tracts → low coverage  
 
 ![Tract Patterns](figures/pctbusaccess.png)
+
+This map shows the percentage of new residential parcels with bus access by census tract in Montgomery County. Access is highest in the southern tracts, while many northern and western areas show limited or no bus coverage. White tracts indicate no new residential development.
+Parcels with Bus Access: 4,672 Total New Developments: 6,376
+
+
+
 ![Tract Patterns](figures/pcttrainaccess.png)
+
+This map displays the percentage of new residential parcels with train access by census tract in Montgomery County. Most tracts show low access (0–20%, light yellow), while higher access (60–100%, dark green) is concentrated along WMATA and MARC corridors in the eastern and southern regions. Western and northern tracts lack access due to limited station coverage.
+Parcels with Train Access: 1,274Total New Developments: 6,376
+
+
 
 ---
 
@@ -143,3 +154,16 @@ Bus facilities:
 - GIS visualization – maps highlighting spatial gaps.  
 
 ---
+
+## Conclusion
+- Built a normalized spatial PostGIS database with well-organized schemas, role control, and validation rules.
+- Identified 6,376 new residential parcels developed since 2020 in Montgomery County.
+- Found that only 1,274 (≈20%) of these have access to train stations within 1 mile.
+- Bus access is more widespread , 4,672 parcels (~73%) are within 500m of a stop.
+- 1,653 parcels had no transit access (bus or train) within defined thresholds.
+- Spatial patterns show higher access in southern and eastern tracts and lower access in the north and west.
+- Created tract-level views to support equity-focused transit planning.
+- Gained experience in ETL, spatial indexing, role-based access, and spatial SQL for real-world urban planning use.
+
+
+
