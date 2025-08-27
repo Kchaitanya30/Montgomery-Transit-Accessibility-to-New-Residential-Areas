@@ -55,7 +55,16 @@ It integrates parcel, boundary, and transit datasets into a PostGIS database, ap
    - `parcels_finalproject_etl.qmd`: filters/cleans parcels → PostGIS.  
 
 3. **Queries & Analysis**  
-   - Run `queries.sql` for counts, summaries, and validation.  
+   - Run `queries.sql` for counts, summaries, and validation.
+   - 
+---
+## Database Schema (ERD)
+
+The Entity–Relationship Diagram (ERD) below illustrates the database structure,  
+showing how parcels, boundaries, and transit datasets are organized in PostGIS  
+and how they relate to each other.
+
+![Database ERD](figures/erd.png)
 
 ---
 
