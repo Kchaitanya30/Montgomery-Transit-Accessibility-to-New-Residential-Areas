@@ -1,0 +1,7 @@
+
+in the cmd
+
+cd "C:\Program Files\PostgreSQL\15\bin"
+
+
+pg_dump -U postgres -F c -f "E:\671 - Spatial database\Final Project\the final\Assignment\Scripts\dumps\transit_access_project.backup"  transit_access_project
