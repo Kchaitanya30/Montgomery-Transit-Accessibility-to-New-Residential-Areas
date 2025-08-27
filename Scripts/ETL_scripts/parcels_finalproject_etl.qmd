@@ -1,0 +1,275 @@
+---
+title: "finalproject_ETL"
+format: html
+editor: visual
+---
+
+```{r set-up, message=FALSE, warning=FALSE}
+library(dplyr) # advanced data cleaning
+library(stringr) 
+library(sf) # spatial data operation
+library(arcgislayers) # interface with feature service
+library(RPostgres) # establish postgres driver
+library(DBI) # allow commands to be sent to database
+options(scipen = 999) # eliminate scientific notation
+library(jsonlite)
+```
+
+```{r}
+# Define a function to clean parcel address data for data acquisition
+# Replaces full street type words with standard abbreviations (like "STREET" to "ST").
+# Uses \\b (word boundary) to match whole words only — for example, it will match "STREET" in "MAIN STREET" but not in "STREETLIGHT".
+# Uses $ to make sure the word is at the end of the string (e.g., "123 MAIN STREET" becomes "123 MAIN ST").
+
+mont_parcel_ETL <- function(df) {
+  # Load ZIP codes from MD boundaries layer
+  md_zips <- arc_open("https://geodata.md.gov/imap/rest/services/Boundaries/MD_PoliticalBoundaries/FeatureServer/4") |>
+    arc_select(fields = "ZIPCODE1", geometry = FALSE)
+
+  # Street suffix standardization patterns
+  replacements <- c(
+    "\\bSTREET\\b$"     = "ST",
+    "\\bSTRT\\b$"       = "ST",
+    "\\bROAD\\b$"       = "RD",
+    "\\bAVENUE\\b$"     = "AVE",
+    "\\bBOULEVARD\\b$"  = "BLVD",
+    "\\bLANE\\b$"       = "LN",
+    "\\bDRIVE\\b$"      = "DR",
+    "\\bCOURT\\b$"      = "CT",
+    "\\bCIRCLE\\b$"     = "CIR",
+    "\\bPLACE\\b$"      = "PL",
+    "\\bTERRACE\\b$"    = "TER",
+    "\\bPARKWAY\\b$"    = "PKWY",
+    "\\bSQUARE\\b$"     = "SQ",
+    "\\bTRAIL\\b$"      = "TRL",
+    "\\bCENTER\\b$"     = "CTR",
+    "\\bHIGHWAY\\b$"    = "HWY",
+    "\\bWAY\\b$"        = "WAY",
+    "\\bALLEY\\b$"      = "ALY",
+    "\\bCRESCENT\\b$"   = "CRES",
+    "\\bEXPRESSWAY\\b$" = "EXPY",
+    "\\bFREEWAY\\b$"    = "FWY",
+    "\\bJUNCTION\\b$"   = "JCT",
+    "\\bMOUNT\\b$"      = "MT",
+    "\\bRIDGE\\b$"      = "RDG",
+    "\\bSPRING\\b$"     = "SPG"
+  )
+
+   df |>
+    dplyr::mutate(
+      Account.ID..MDP.Field..ACCTID. = as.character(Account.ID..MDP.Field..ACCTID.), # convert account id to char
+  # Create a concatenated field for premise address. If the street direction is null, handle that in the case_when()
+  # Use trimws() to remove leading/trailing spaces from number and direction fields
+    premise_addr = dplyr::case_when(
+        PREMISE.ADDRESS..Direction..MDP.Field..PREMSDIR..SDAT.Field..22. != "" ~ paste0(
+          trimws(
+            PREMISE.ADDRESS..Number..MDP.Field..PREMSNUM..SDAT.Field..20.
+          ),
+          " ",
+          trimws(
+            PREMISE.ADDRESS..Direction..MDP.Field..PREMSDIR..SDAT.Field..22.
+          ),
+          " ",
+          PREMISE.ADDRESS..Name..MDP.Field..PREMSNAM..SDAT.Field..23.,
+          " ",
+          PREMISE.ADDRESS..Type..MDP.Field..PREMSTYP..SDAT.Field..24.
+        ),
+  # If no street direction, just combine number, name, and type
+        TRUE ~ paste0(
+          trimws(
+            PREMISE.ADDRESS..Number..MDP.Field..PREMSNUM..SDAT.Field..20.
+          ),
+          " ",
+          PREMISE.ADDRESS..Name..MDP.Field..PREMSNAM..SDAT.Field..23.,
+          " ",
+          PREMISE.ADDRESS..Type..MDP.Field..PREMSTYP..SDAT.Field..24.
+        )
+      ),
+  # Convert premise address zipcodes to character type.
+      PREMISE.ADDRESS..Zip.Code..MDP.Field..PREMZIP..SDAT.Field..26. = as.character(
+        PREMISE.ADDRESS..Zip.Code..MDP.Field..PREMZIP..SDAT.Field..26.
+      ),
+  # Convert mailing address zipcodes to character type.
+      MDP.Street.Address.Zip.Code..MDP.Field..ZIPCODE. = as.character(MDP.Street.Address.Zip.Code..MDP.Field..ZIPCODE.),
+  # Perform the following transformation across both zipcode columns.
+  # Use grepl() to check if zip is exactly 5 digits and not "00000"
+      across(
+        c(
+          PREMISE.ADDRESS..Zip.Code..MDP.Field..PREMZIP..SDAT.Field..26.,
+          MDP.Street.Address.Zip.Code..MDP.Field..ZIPCODE.
+        ),
+        ~ case_when(grepl("^\\d{5}$", .) &
+                      . != "00000" ~ ., TRUE ~ "NA")
+      ),
+  # Perform the following transformation across all 3 columns.
+      across( # across numeric fields, set NA to 0
+        c(
+          C.A.M.A..SYSTEM.DATA..Year.Built..YYYY...MDP.Field..YEARBLT..SDAT.Field..235.
+        ),
+        ~ case_when(!is.na(.) ~ ., TRUE ~ 0)
+      ),
+  # Perform the following transformation across all character type columns.
+  # If the value is blank, then assign the default value: "NA".
+      across(where(is.character), ~ case_when(. != "" ~ ., TRUE ~ "NA")),
+  # across year built, set to 0 when less than 1,000 (e.g. only three digits)
+      across(
+        c(
+          C.A.M.A..SYSTEM.DATA..Year.Built..YYYY...MDP.Field..YEARBLT..SDAT.Field..235.
+        ),
+        ~ case_when(. > 1000 ~ ., TRUE ~ 0)
+      ),
+  # make addresses all caps
+      across(
+        c(premise_addr, MDP.Street.Address..MDP.Field..ADDRESS.),
+        ~ str_replace_all(str_to_upper(.), replacements)
+      )
+    ) |>
+    # rename all fields
+    dplyr::rename(
+      account_id = Account.ID..MDP.Field..ACCTID.,
+      premise_city = PREMISE.ADDRESS..City..MDP.Field..PREMCITY..SDAT.Field..25.,
+      premise_zip = PREMISE.ADDRESS..Zip.Code..MDP.Field..PREMZIP..SDAT.Field..26.,
+      mailing_addr = MDP.Street.Address..MDP.Field..ADDRESS.,
+      mailing_city = MDP.Street.Address.City..MDP.Field..CITY.,
+      mailing_zip = MDP.Street.Address.Zip.Code..MDP.Field..ZIPCODE.,
+      jurscode = Jurisdiction.Code..MDP.Field..JURSCODE.,
+      county_name = County.Name..MDP.Field..CNTYNAME.,
+      geom_long = MDP.Longitude..MDP.Field..DIGXCORD.converted.to.WGS84.,
+      geom_lat = MDP.Latitude..MDP.Field..DIGYCORD.converted.to.WGS84.,
+      lu_code = Land.Use.Code..MDP.Field..LU.DESCLU..SDAT.Field..50.,
+      yr_built = C.A.M.A..SYSTEM.DATA..Year.Built..YYYY...MDP.Field..YEARBLT..SDAT.Field..235.,
+      real_prop_link = Real.Property.Search.Link
+    ) |>
+    # create geometry object
+    st_as_sf(
+      coords = c("geom_long", "geom_lat"),
+      crs = 4269,
+      remove = FALSE,
+      sf_column_name = "geom"
+    ) |>
+    # project into md state plane
+    st_transform(26985) |>
+    # drop unused columns
+    select(-c(
+      starts_with("PREMISE", ignore.case = FALSE),
+      starts_with("SALES"),
+      starts_with("geom_")
+    )) |>
+      mutate(
+           premise_state = "MD") |>
+    # rearrange to match data model
+    relocate(
+      account_id,
+      premise_addr,
+      premise_city,
+      premise_zip,
+      premise_state,
+      mailing_addr,
+      mailing_city,
+      mailing_zip,
+      jurscode,
+      county_name,
+      yr_built,
+      lu_code,
+      real_prop_link,
+      yr_built_flag,
+      lu_code_flag,
+      geom
+    )
+}
+
+
+```
+
+```{r define-soql, message=FALSE, warning=FALSE}
+soql <- str_replace_all(
+  "SELECT 
+  case(
+    c_a_m_a_system_data_year_built_yyyy_mdp_field_yearblt_sdat_field_235 :: number >= 2020,
+    1, true, 0
+  ) as yr_built_flag, 
+  case(
+    land_use_code_mdp_field_lu_desclu_sdat_field_50 LIKE 'Residential (R)' 
+    OR land_use_code_mdp_field_lu_desclu_sdat_field_50 LIKE 'Apartments (M)' 
+    OR land_use_code_mdp_field_lu_desclu_sdat_field_50 LIKE 'Commercial Residential (CR)' 
+    OR land_use_code_mdp_field_lu_desclu_sdat_field_50 LIKE 'Residential Condominium (U)' 
+    OR land_use_code_mdp_field_lu_desclu_sdat_field_50 LIKE 'Residential Commercial (RC)' 
+    OR land_use_code_mdp_field_lu_desclu_sdat_field_50 LIKE 'Town House (TH)', 
+    1, 
+    true, 
+    0
+  ) as lu_code_flag, 
+  account_id_mdp_field_acctid, 
+  mdp_longitude_mdp_field_digxcord_converted_to_wgs84, 
+  mdp_latitude_mdp_field_digycord_converted_to_wgs84, 
+  jurisdiction_code_mdp_field_jurscode, 
+  county_name_mdp_field_cntyname, 
+  mdp_street_address_mdp_field_address, 
+  mdp_street_address_city_mdp_field_city, 
+  mdp_street_address_zip_code_mdp_field_zipcode, 
+  premise_address_number_mdp_field_premsnum_sdat_field_20, 
+  premise_address_number_suffix_sdat_field_21, 
+  premise_address_direction_mdp_field_premsdir_sdat_field_22, 
+  premise_address_name_mdp_field_premsnam_sdat_field_23, 
+  premise_address_type_mdp_field_premstyp_sdat_field_24, 
+  premise_address_city_mdp_field_premcity_sdat_field_25, 
+  premise_address_zip_code_mdp_field_premzip_sdat_field_26, 
+  premise_address_zip_4_code_mdp_field_premzip2_sdat_field_27, 
+  c_a_m_a_system_data_year_built_yyyy_mdp_field_yearblt_sdat_field_235, 
+  land_use_code_mdp_field_lu_desclu_sdat_field_50, 
+  real_property_search_link 
+WHERE 
+  account_id_mdp_field_acctid IS NOT NULL 
+  AND account_id_mdp_field_acctid <> '0' 
+  AND mdp_longitude_mdp_field_digxcord_converted_to_wgs84 <> 0 
+  AND mdp_latitude_mdp_field_digycord_converted_to_wgs84 <> 0 
+  AND mdp_longitude_mdp_field_digxcord_converted_to_wgs84 IS NOT NULL 
+  AND mdp_latitude_mdp_field_digycord_converted_to_wgs84 IS NOT NULL 
+LIMIT 
+  1000000",
+  c(" " = "%20", "\n" = "")
+)
+```
+
+```{r}
+mont_url <- "https://opendata.maryland.gov/resource/kb22-is2w.csv?$query="
+
+
+mont_df <- read.csv(paste0(mont_url, soql)) |>
+  mont_parcel_ETL()
+```
+
+```{r insert-db, message=FALSE, warning=FALSE}
+# Establish database connections per user. First, name the database to connect to.
+database_name = "access_transit_project"
+# Establish usernames and passwords for each role.
+acplan_user = "acplan"
+acplan_pwd = "AdminPass123"
+ges_editor_user = "ges_editor"
+ges_editor_pwd = "EditorPass123"
+
+# Create the database connections for each user specified above.
+acplan_con <- dbConnect(
+  Postgres(),
+  dbname = database_name,
+  user = acplan_user,
+  password = acplan_pwd,
+  host = "127.0.0.1"
+)
+ges_editor_con <- dbConnect(
+  Postgres(),
+  dbname = database_name,
+  user = ges_editor_user,
+  password = ges_editor_pwd,
+  host = "127.0.0.1"
+)
+
+# Truncate the plancad.parcels table as PLANCAD user.
+dbExecute(acplan_con, r"(TRUNCATE TABLE acplan."PARCELS";)")
+
+# Insert rows from all_df into the (now empty) plancad.parcels table.
+st_write(mont_df,
+         ges_editor_con,
+         Id(table = "PARCELS", schema = "acplan"),
+         append = TRUE)
+```

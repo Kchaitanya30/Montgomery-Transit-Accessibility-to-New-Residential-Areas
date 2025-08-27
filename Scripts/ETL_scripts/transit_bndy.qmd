@@ -1,0 +1,201 @@
+---
+title: "county_boundaries_finalproject"
+format: html
+editor: visual
+---
+
+## 
+
+```{r load-libraries}
+library(sf) # spatial data operation
+library(arcgislayers) # interface with feature service
+library(RPostgres) # establish postgres driver
+library(DBI) # allow commands to be sent to database
+library(dplyr)
+library(stringr)
+options(scipen = 999) # eliminate scientific notation
+```
+
+```{r get-url}
+#| echo: false
+url <- "https://geodata.md.gov/imap/rest/services/Boundaries/MD_PhysicalBoundaries/FeatureServer/1"
+cbnd <- arc_read(url) |>
+  select(countynum, county) |>
+  rename(county_code = countynum,
+         county_name = county,
+         geom = geometry) |>
+  mutate(across(county_name, ~ str_replace_all(.,c("'" = "", "St." = "Saint"))),
+         county_name = case_when(county_name != 'Baltimore City' ~ paste(county_name, "County"),
+                                 TRUE ~ "Baltimore city")) |>
+  st_transform(26985)
+```
+
+```{r}
+url2<- "https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Maryland_Transit_MARC_Train_Stations/FeatureServer/0"
+marc<- arc_read(url2) |>
+  select(OBJECTID, Name, ADDRESS, CITY, STATE, ZIP, Transit_Mo, Line_Name, Facility_T) |>
+   rename (objectid = OBJECTID, station_name = Name, station_address = ADDRESS, station_city = CITY, station_state = STATE, station_zip = ZIP, transit_mo = Transit_Mo, line_name = Line_Name, facility_t = Facility_T, geom = geometry) |>
+  mutate( station_zip = as.character(station_zip)) |>
+  st_transform(26985)
+```
+
+```{r}
+
+url3 <- "https://geodata.md.gov/imap/rest/services/Transportation/MD_Transit/FeatureServer/0"
+amtrak <- arc_read(url3) |>
+  select(OBJECTID, STNNAME, STNTYPE, STNCODE, ADDRESS1, CITY, STATE, ZIP) |>
+  rename(
+    objectid = OBJECTID,
+    station_name = STNNAME,
+    station_type = STNTYPE,
+    station_code = STNCODE,
+    station_addr = ADDRESS1,
+    station_city = CITY,
+    station_state = STATE,
+    station_zip = ZIP,
+    geom = geometry
+  ) |>
+  mutate(
+    station_zip = stringr::str_sub(as.character(station_zip), 1, 5)
+  ) |>
+  st_transform(26985)
+
+```
+
+```{r}
+url16<- "https://mdgeodata.md.gov/imap/rest/services/Transportation/MD_Transit/FeatureServer/7"
+
+wmata <- arc_read(url16) |>
+  select(GIS_ID, NAME, ADDRESS, MetroLine) |>
+  rename(gis_id = GIS_ID, station_name = NAME, station_addr = ADDRESS, metroline = MetroLine, geom = geometry) |>
+  st_transform(26985)
+```
+
+```{r}
+url4 <- "https://mdgeodata.md.gov/imap/rest/services/Transportation/MD_Transit/FeatureServer/9"
+
+mtabus <- arc_read(url4) |>
+  select(OBJECTID, stop_name, Routes_Served, Mode, County) |>
+  rename(objectid = OBJECTID, routes_served = Routes_Served,mode = Mode, county = County, geom = geometry) |>
+  st_transform(26985)
+
+mtabus$routes_served[is.na(mtabus$routes_served)] <- "NA"
+```
+
+```{r}
+url5 <- "https://mdgeodata.md.gov/imap/rest/services/Transportation/MD_LocalTransit/FeatureServer/18"
+
+rideon <- arc_read(url5) |>
+  select(stop_code, stop_name, stop_lat, stop_lon, Town) |>
+  rename(town = Town) |>
+  st_as_sf(
+    coords= c("stop_lat", "stop_lon"),
+    crs = 4269,
+    remove = TRUE,
+    sf_column_name = "geom"
+  ) |>
+  st_transform(26985) |>
+  rename(geom= geometry) |>
+  select(-stop_lat, -stop_lon)
+
+  rideon$town[is.na(rideon$town)] <- "NA"
+```
+
+```{r}
+url7 <- "https://mdgeodata.md.gov/imap/rest/services/Demographics/MD_CensusBoundaries/MapServer/2"
+
+md_tracts <- arc_read(url7) |>
+  select(OBJECTID, TRACTCE20, NAME20, COUNTYFP20, geometry) |>
+  rename(
+    objectid = OBJECTID,
+    tractfips = TRACTCE20,
+    name = NAME20,
+    countyfips = COUNTYFP20,
+    geom = geometry
+  ) |>
+  st_transform(26985)
+```
+
+```{r write-db}
+#| echo: false
+# Establish database connections per user. First, name the database to connect to.
+database_name = "transit_access_project"
+# Establish usernames and passwords for each role.
+bndy_user = "bndy"
+bndy_pwd = "AdminPass123"
+ges_editor_user = "ges_editor"
+ges_editor_pwd = "EditorPass123"
+
+trans_user = "trans"
+trans_pwd = "AdminPass123"
+ges_editor_user = "ges_editor"
+ges_editor_pwd = "EditorPass123"
+
+# Create the database connections for each user specified above.
+bndy_con <- dbConnect(
+  Postgres(),
+  dbname = database_name,
+  user = bndy_user,
+  password = bndy_pwd,
+  host = "127.0.0.1"
+)
+trans_con <- dbConnect(
+  Postgres(),
+  dbname = database_name,
+  user = trans_user,
+  password = trans_pwd,
+  host = "127.0.0.1"
+)
+ges_editor_con <- dbConnect(
+  Postgres(),
+  dbname = database_name,
+  user = ges_editor_user,
+  password = ges_editor_pwd,
+  host = "127.0.0.1"
+)
+
+# Truncate the plancad.parcels table as PLANCAD user.
+dbExecute(bndy_con, r"(TRUNCATE TABLE bndy."COUNTY_BOUNDARY";)")
+dbExecute(trans_con, r"(TRUNCATE TABLE trans."MARC";)")
+dbExecute(trans_con, r"(TRUNCATE TABLE trans."AMTRAK";)")
+dbExecute(trans_con, r"(TRUNCATE TABLE trans."MTABUS";)")
+dbExecute(trans_con, r"(TRUNCATE TABLE trans."RIDEON";)")
+dbExecute(trans_con, r"(TRUNCATE TABLE trans."WMATA";)")
+dbExecute(bndy_con, r"(TRUNCATE TABLE bndy."TRACT_BOUNDARY";)")
+# Insert rows from all_df into the (now empty) plancad.parcels table.
+st_write(cbnd,
+         ges_editor_con,
+         Id(table = "COUNTY_BOUNDARY", schema = "bndy"),
+         append = TRUE)
+
+st_write(marc,
+         ges_editor_con,
+         Id(table = "MARC", schema = "trans"),
+         append = TRUE)
+
+
+st_write(amtrak,
+         ges_editor_con,
+         Id(table = "AMTRAK", schema = "trans"),
+         append = TRUE)
+
+st_write(mtabus,
+         ges_editor_con,
+         Id(table = "MTABUS", schema = "trans"),
+         append = TRUE)
+
+st_write(rideon,
+         ges_editor_con,
+         Id(table = "RIDEON", schema = "trans"),
+         append = TRUE)
+
+st_write(wmata,
+         ges_editor_con,
+         Id(table = "WMATA", schema = "trans"),
+         append = TRUE)
+
+st_write(md_tracts,
+         ges_editor_con,
+         Id(table = "TEMP_TRACT_BOUNDARY", schema = "bndy"),
+         append = TRUE)
+```
